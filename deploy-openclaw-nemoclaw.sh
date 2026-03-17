@@ -523,6 +523,20 @@ WRAPPER
     ls /etc/shadow 2>/dev/null && echo "[✗] WARNING: /etc/shadow readable!" || echo "[✓] /etc/shadow is blocked"
   '
 
+  # Symlink mounted host directories into the agent workspace so the agent
+  # can discover user files without leaving its configured workspace root.
+  info "Creating workspace symlinks to mounted host directories..."
+  docker exec "$SANDBOX_NAME" sh -c '
+    mkdir -p /sandbox/.openclaw/workspace
+    ln -sfn '"$SANDBOX_MOUNT_1"' /sandbox/.openclaw/workspace/razborы
+    ln -sfn '"$SANDBOX_MOUNT_2"' /sandbox/.openclaw/workspace/biblioteka
+    ln -sfn '"$SANDBOX_MOUNT_3"' /sandbox/.openclaw/workspace/recipes_taxonomy
+    ln -sfn /workspace/context-hub /sandbox/.openclaw/workspace/context-hub
+
+    echo "[✓] Workspace symlinks created:"
+    ls -la /sandbox/.openclaw/workspace/
+  '
+
   log "Sandbox interior configured."
 }
 
