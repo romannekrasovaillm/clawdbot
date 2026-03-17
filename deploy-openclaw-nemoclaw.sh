@@ -388,11 +388,14 @@ create_sandbox() {
     vol_args+=(-v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw")
     [[ -d "$CONTEXTHUB_DIR" ]] && vol_args+=(-v "$CONTEXTHUB_DIR:/workspace/context-hub:ro")
 
-    # Use node (guaranteed in this image) as keep-alive instead of sleep
+    # Use --entrypoint to skip docker-entrypoint.sh (it needs setuid
+    # which is blocked by no-new-privileges). Run node directly as
+    # a keep-alive process.
     docker run -d \
       --name "$SANDBOX_NAME" \
       --hostname "$SANDBOX_NAME" \
       --security-opt no-new-privileges:true \
+      --entrypoint /usr/local/bin/node \
       --tmpfs /tmp:rw,nosuid,size=512m \
       --tmpfs /sandbox:rw,exec,size=2g \
       "${vol_args[@]}" \
@@ -404,7 +407,7 @@ create_sandbox() {
       -e "HOME=/sandbox" \
       -w /sandbox \
       node:22-slim \
-      node -e "setInterval(()=>{},1<<30)"
+      -e "setInterval(()=>{},1<<30)"
 
     # Give the container a moment to start, then verify
     sleep 2
