@@ -394,7 +394,6 @@ create_sandbox() {
     docker run -d \
       --name "$SANDBOX_NAME" \
       --hostname "$SANDBOX_NAME" \
-      --security-opt no-new-privileges:true \
       --entrypoint /usr/local/bin/node \
       --tmpfs /tmp:rw,nosuid,size=512m \
       --tmpfs /sandbox:rw,exec,size=2g \
