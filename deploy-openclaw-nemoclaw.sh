@@ -167,11 +167,11 @@ install_deps() {
   (cd "$CONTEXTHUB_DIR" && npm install)
 
   # Make chub CLI available
-  if [[ -f "$CONTEXTHUB_DIR/cli/chub.js" ]]; then
-    chmod +x "$CONTEXTHUB_DIR/cli/chub.js"
+  if [[ -f "$CONTEXTHUB_DIR/cli/bin/chub" ]]; then
+    chmod +x "$CONTEXTHUB_DIR/cli/bin/chub"
     # Symlink into a path location
     mkdir -p "$INSTALL_DIR/bin"
-    ln -sf "$CONTEXTHUB_DIR/cli/chub.js" "$INSTALL_DIR/bin/chub"
+    ln -sf "$CONTEXTHUB_DIR/cli/bin/chub" "$INSTALL_DIR/bin/chub"
   fi
 
   log "Dependencies installed."
@@ -460,10 +460,10 @@ WRAPPER
     fi
 
     # Create chub wrapper that runs context-hub CLI
-    if [ -f /workspace/context-hub/cli/chub.js ]; then
+    if [ -f /workspace/context-hub/cli/bin/chub ]; then
       cat > /sandbox/bin/chub <<WRAPPER
 #!/bin/sh
-exec /usr/local/bin/node /workspace/context-hub/cli/chub.js "\$@"
+exec /usr/local/bin/node /workspace/context-hub/cli/bin/chub "\$@"
 WRAPPER
       chmod +x /sandbox/bin/chub
       echo "[✓] chub CLI installed"
@@ -473,7 +473,7 @@ WRAPPER
       chmod +x /sandbox/bin/chub 2>/dev/null || true
       echo "[✓] chub CLI installed (from hostbin)"
     else
-      echo "[!] chub CLI not available (context-hub/cli/chub.js not found)"
+      echo "[!] chub CLI not available (context-hub/cli/bin/chub not found)"
     fi
 
     # Verify openclaw is callable
