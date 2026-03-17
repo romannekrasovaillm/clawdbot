@@ -13,10 +13,12 @@ set -euo pipefail
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 SANDBOX_NAME="${NEMOCLAW_SANDBOX_NAME:-openclaw-dev}"
+OPENCLAW_REPO="https://github.com/openclaw/openclaw.git"
 NEMOCLAW_REPO="https://github.com/romannekrasovaillm/NemoClaw.git"
 CONTEXTHUB_REPO="https://github.com/romannekrasovaillm/context-hub.git"
 
 INSTALL_DIR="${NEMOCLAW_INSTALL_DIR:-$HOME/.nemoclaw-deploy}"
+OPENCLAW_DIR="$INSTALL_DIR/openclaw"
 NEMOCLAW_DIR="$INSTALL_DIR/NemoClaw"
 CONTEXTHUB_DIR="$INSTALL_DIR/context-hub"
 STATE_DIR="$HOME/.nemoclaw"
@@ -103,6 +105,16 @@ clone_repos() {
   info "Setting up installation directory: $INSTALL_DIR"
   mkdir -p "$INSTALL_DIR"
 
+  # OpenClaw (main project)
+  if [[ -d "$OPENCLAW_DIR/.git" ]]; then
+    info "Updating OpenClaw..."
+    git -C "$OPENCLAW_DIR" pull --rebase origin main 2>/dev/null || \
+      git -C "$OPENCLAW_DIR" pull --rebase 2>/dev/null || true
+  else
+    info "Cloning OpenClaw..."
+    git clone "$OPENCLAW_REPO" "$OPENCLAW_DIR"
+  fi
+
   # NemoClaw
   if [[ -d "$NEMOCLAW_DIR/.git" ]]; then
     info "Updating NemoClaw..."
@@ -123,12 +135,20 @@ clone_repos() {
     git clone "$CONTEXTHUB_REPO" "$CONTEXTHUB_DIR"
   fi
 
-  log "Repositories ready."
+  log "All repositories ready."
+  info "  openclaw:     $OPENCLAW_DIR"
+  info "  NemoClaw:     $NEMOCLAW_DIR"
+  info "  context-hub:  $CONTEXTHUB_DIR"
 }
 
 # ── Step 2: Install dependencies ─────────────────────────────────────────────
 
 install_deps() {
+  info "Installing OpenClaw dependencies and building..."
+  if [[ -f "$OPENCLAW_DIR/package.json" ]]; then
+    (cd "$OPENCLAW_DIR" && npm install && npm run build 2>/dev/null || true)
+  fi
+
   info "Installing NemoClaw dependencies..."
   (cd "$NEMOCLAW_DIR" && npm install --omit=dev)
 
@@ -578,14 +598,54 @@ print_summary() {
   echo -e "${CYAN}══════════════════════════════════════════════════════════════${NC}"
 }
 
+# ── Usage / Help ──────────────────────────────────────────────────────────────
+
+usage() {
+  echo "Usage: $0 [OPTIONS]"
+  echo ""
+  echo "Options:"
+  echo "  --clone-only    Clone all GitHub repos and exit (no sandbox/deploy)"
+  echo "  --help          Show this help"
+  echo ""
+  echo "Environment variables:"
+  echo "  DEEPSEEK_API_KEY          DeepSeek API key for reasoning inference"
+  echo "  NEMOCLAW_SANDBOX_NAME     Sandbox container name (default: openclaw-dev)"
+  echo "  NEMOCLAW_INSTALL_DIR      Installation directory (default: ~/.nemoclaw-deploy)"
+  echo ""
+  echo "GitHub repositories cloned:"
+  echo "  openclaw:     $OPENCLAW_REPO"
+  echo "  NemoClaw:     $NEMOCLAW_REPO"
+  echo "  context-hub:  $CONTEXTHUB_REPO"
+}
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 main() {
+  # Parse arguments
+  local clone_only=false
+  for arg in "$@"; do
+    case "$arg" in
+      --clone-only) clone_only=true ;;
+      --help|-h) usage; exit 0 ;;
+    esac
+  done
+
   echo ""
   echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${NC}"
   echo -e "${CYAN}║  OpenClaw + NemoClaw (OpenShell) + context-hub deployment  ║${NC}"
   echo -e "${CYAN}╚══════════════════════════════════════════════════════════════╝${NC}"
   echo ""
+
+  if [[ "$clone_only" == true ]]; then
+    info "Clone-only mode: cloning repositories..."
+    check_command git
+    clone_repos
+    log "Done. Repos cloned to $INSTALL_DIR"
+    echo ""
+    echo -e "  ${CYAN}Следующий шаг — полное развёртывание:${NC}"
+    echo -e "    DEEPSEEK_API_KEY=\"sk-...\" $0"
+    exit 0
+  fi
 
   preflight
   clone_repos
