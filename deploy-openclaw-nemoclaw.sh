@@ -146,7 +146,13 @@ clone_repos() {
 install_deps() {
   info "Installing OpenClaw dependencies and building..."
   if [[ -f "$OPENCLAW_DIR/package.json" ]]; then
-    (cd "$OPENCLAW_DIR" && npm install && npm run build 2>/dev/null || true)
+    # OpenClaw uses pnpm workspaces; npm install does not work here.
+    if ! command -v pnpm &>/dev/null; then
+      info "Installing pnpm..."
+      npm install -g pnpm
+    fi
+    (cd "$OPENCLAW_DIR" && pnpm install && pnpm build) || \
+      warn "OpenClaw build failed. The gateway may not work from source mount."
   fi
 
   info "Installing NemoClaw dependencies..."
@@ -432,16 +438,26 @@ create_sandbox() {
 setup_sandbox_interior() {
   info "Setting up OpenClaw inside sandbox..."
 
+  # Install git inside container (needed by some npm packages)
+  docker exec "$SANDBOX_NAME" sh -c '
+    apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
+  ' 2>&1 || warn "Could not install git inside container."
+
   # Create wrapper scripts in /sandbox/bin so openclaw and chub are on PATH
   docker exec "$SANDBOX_NAME" sh -c '
     mkdir -p /sandbox/bin /sandbox/node_modules /sandbox/.openclaw
 
-    # Create openclaw wrapper that runs the locally-mounted build
-    cat > /sandbox/bin/openclaw <<WRAPPER
+    # Prefer locally-mounted build; fall back to npm install from registry
+    if [ -f /opt/openclaw/openclaw.mjs ]; then
+      cat > /sandbox/bin/openclaw <<WRAPPER
 #!/bin/sh
 exec /usr/local/bin/node /opt/openclaw/openclaw.mjs "\$@"
 WRAPPER
-    chmod +x /sandbox/bin/openclaw
+      chmod +x /sandbox/bin/openclaw
+    else
+      echo "[!] openclaw.mjs not found in source mount — installing from npm..."
+      npm install -g openclaw@latest 2>&1 || echo "[!] npm install openclaw failed"
+    fi
 
     # Create chub wrapper that runs context-hub CLI
     if [ -f /workspace/context-hub/cli/chub.js ]; then
@@ -515,19 +531,27 @@ WRAPPER
 configure_gateway() {
   info "Configuring OpenClaw gateway..."
 
-  # Set up openclaw config with NemoClaw inference routing
+  # Write only keys that OpenClaw's config schema recognizes.
+  # NemoClaw-specific settings (inference, workspace, contextHub) are passed
+  # via environment variables and a separate nemoclaw config file instead.
   local config_script='
     # Create openclaw config directory
     mkdir -p /sandbox/.openclaw
 
-    # Write gateway config
+    # Write gateway config (only valid OpenClaw schema keys)
     cat > /sandbox/.openclaw/openclaw.json <<GWEOF
 {
   "gateway": {
     "mode": "local",
     "port": 18789,
     "bind": "loopback"
-  },
+  }
+}
+GWEOF
+
+    # Write NemoClaw-specific settings to a separate config file
+    cat > /sandbox/.openclaw/nemoclaw.json <<NMEOF
+{
   "inference": {
     "provider": "openai-compatible",
     "baseUrl": "'"$DEEPSEEK_BASE_URL"'",
@@ -556,9 +580,10 @@ configure_gateway() {
     "annotations": "/sandbox/.openclaw/chub-annotations"
   }
 }
-GWEOF
+NMEOF
 
     echo "[✓] OpenClaw config written"
+    echo "[✓] NemoClaw config written"
   '
 
   docker exec "$SANDBOX_NAME" sh -c "$config_script" 2>&1 || \
