@@ -22,13 +22,20 @@ CONTEXTHUB_DIR="$INSTALL_DIR/context-hub"
 STATE_DIR="$HOME/.nemoclaw"
 CREDENTIALS_FILE="$STATE_DIR/credentials.json"
 
+# DeepSeek API (reasoning model)
+DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
+DEEPSEEK_BASE_URL="https://api.deepseek.com"
+DEEPSEEK_MODEL="deepseek-reasoner"
+
 # Allowed host directories (bind-mounted into sandbox)
 ALLOWED_DIR_1="/home/roman/Документы/КОД/gigachat/РАЗБОРЫ"
 ALLOWED_DIR_2="/home/roman/Документы/БИБЛИОТЕКА"
+ALLOWED_DIR_3="/home/roman/Документы/КОД/gigachat/РАЗБОРЫ/recipes_taxonomy"
 
 # Sandbox mount points
 SANDBOX_MOUNT_1="/workspace/razborы"
 SANDBOX_MOUNT_2="/workspace/biblioteka"
+SANDBOX_MOUNT_3="/workspace/recipes_taxonomy"
 
 # Colors
 RED='\033[0;31m'
@@ -77,6 +84,14 @@ preflight() {
   fi
   if [[ ! -d "$ALLOWED_DIR_2" ]]; then
     die "Required directory does not exist: $ALLOWED_DIR_2"
+  fi
+  if [[ ! -d "$ALLOWED_DIR_3" ]]; then
+    warn "Directory does not exist yet (will be created if needed): $ALLOWED_DIR_3"
+  fi
+
+  # Warn if DeepSeek API key is not set
+  if [[ -z "$DEEPSEEK_API_KEY" ]]; then
+    warn "DEEPSEEK_API_KEY is not set. You will be prompted during credential setup."
   fi
 
   log "Preflight checks passed."
@@ -136,35 +151,45 @@ install_deps() {
   log "Dependencies installed."
 }
 
-# ── Step 3: Configure NVIDIA credentials ─────────────────────────────────────
+# ── Step 3: Configure DeepSeek credentials ───────────────────────────────────
 
 configure_credentials() {
   mkdir -p "$STATE_DIR"
 
   if [[ -f "$CREDENTIALS_FILE" ]]; then
-    log "Credentials file already exists: $CREDENTIALS_FILE"
-    return
+    # Check if already has deepseek key
+    if grep -q "deepseek_api_key" "$CREDENTIALS_FILE" 2>/dev/null; then
+      log "DeepSeek credentials already configured: $CREDENTIALS_FILE"
+      return
+    fi
   fi
 
-  echo ""
-  warn "NVIDIA API key is required for Nemotron inference."
-  echo "  Get one at: https://build.nvidia.com/settings/api-key"
-  echo ""
-  read -rsp "Enter NVIDIA API key (or press Enter to skip): " NVIDIA_API_KEY
-  echo ""
+  # Use env var if available, otherwise prompt
+  local api_key="$DEEPSEEK_API_KEY"
+  if [[ -z "$api_key" ]]; then
+    echo ""
+    warn "DeepSeek API key is required for reasoning inference."
+    echo "  Get one at: https://platform.deepseek.com/api_keys"
+    echo ""
+    read -rsp "Enter DeepSeek API key (or press Enter to skip): " api_key
+    echo ""
+  fi
 
-  if [[ -z "$NVIDIA_API_KEY" ]]; then
-    warn "Skipping NVIDIA credentials. You can set them later via 'nemoclaw onboard'."
+  if [[ -z "$api_key" ]]; then
+    warn "Skipping DeepSeek credentials. Set DEEPSEEK_API_KEY env var and rerun."
     return
   fi
 
   cat > "$CREDENTIALS_FILE" <<CRED_EOF
 {
-  "nvidia_api_key": "$NVIDIA_API_KEY"
+  "deepseek_api_key": "$api_key",
+  "deepseek_base_url": "$DEEPSEEK_BASE_URL",
+  "deepseek_model": "$DEEPSEEK_MODEL"
 }
 CRED_EOF
   chmod 600 "$CREDENTIALS_FILE"
-  log "Credentials saved to $CREDENTIALS_FILE"
+  DEEPSEEK_API_KEY="$api_key"
+  log "DeepSeek credentials saved to $CREDENTIALS_FILE"
 }
 
 # ── Step 4: Generate sandbox filesystem policy ───────────────────────────────
@@ -210,6 +235,10 @@ rules:
     path: /workspace/biblioteka
     access: [read, write]
 
+  - action: allow
+    path: /workspace/recipes_taxonomy
+    access: [read, write]
+
   # context-hub data (read-only inside sandbox)
   - action: allow
     path: /workspace/context-hub
@@ -233,16 +262,16 @@ kind: network
 version: v1
 metadata:
   name: openclaw-sandbox-egress
-  description: Minimal egress for OpenClaw + NVIDIA inference + context-hub.
+  description: Minimal egress for OpenClaw + DeepSeek inference + context-hub.
 rules:
-  # NVIDIA inference API
+  # DeepSeek inference API (reasoning model)
   - action: allow
-    destination: integrate.api.nvidia.com
+    destination: api.deepseek.com
     ports: [443]
 
-  # NVIDIA auth
+  # DeepSeek platform (auth, key validation)
   - action: allow
-    destination: "*.nvidia.com"
+    destination: "*.deepseek.com"
     ports: [443]
 
   # OpenClaw services
@@ -307,6 +336,7 @@ create_sandbox() {
   local docker_args=""
   docker_args+=" -v $(printf '%q' "$ALLOWED_DIR_1"):$SANDBOX_MOUNT_1:rw"
   docker_args+=" -v $(printf '%q' "$ALLOWED_DIR_2"):$SANDBOX_MOUNT_2:rw"
+  docker_args+=" -v $(printf '%q' "$ALLOWED_DIR_3"):$SANDBOX_MOUNT_3:rw"
   docker_args+=" -v $CONTEXTHUB_DIR:/workspace/context-hub:ro"
 
   # If nemoclaw supports openshell sandbox create with extra docker args
@@ -316,6 +346,7 @@ create_sandbox() {
       --image "node:22-slim" \
       --volume "$ALLOWED_DIR_1:$SANDBOX_MOUNT_1:rw" \
       --volume "$ALLOWED_DIR_2:$SANDBOX_MOUNT_2:rw" \
+      --volume "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw" \
       --volume "$CONTEXTHUB_DIR:/workspace/context-hub:ro" \
       --policy "$STATE_DIR/policies/restricted-fs.yaml" \
       --policy "$STATE_DIR/policies/network-egress.yaml" \
@@ -336,8 +367,12 @@ create_sandbox() {
       --network none \
       -v "$ALLOWED_DIR_1:$SANDBOX_MOUNT_1:rw" \
       -v "$ALLOWED_DIR_2:$SANDBOX_MOUNT_2:rw" \
+      -v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw" \
       -v "$CONTEXTHUB_DIR:/workspace/context-hub:ro" \
       -e "CHUB_CONTENT_DIR=/workspace/context-hub/content" \
+      -e "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" \
+      -e "DEEPSEEK_BASE_URL=$DEEPSEEK_BASE_URL" \
+      -e "DEEPSEEK_MODEL=$DEEPSEEK_MODEL" \
       -e "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/sandbox/node_modules/.bin" \
       -e "HOME=/sandbox" \
       -w /sandbox \
@@ -390,6 +425,13 @@ setup_sandbox_interior() {
       echo "[✗] БИБЛИОТЕКА not accessible"
     fi
 
+    if [ -d "'"$SANDBOX_MOUNT_3"'" ]; then
+      echo "[✓] recipes_taxonomy mounted and accessible"
+      ls "'"$SANDBOX_MOUNT_3"'" | head -5
+    else
+      echo "[✗] recipes_taxonomy not accessible"
+    fi
+
     echo ""
     echo "=== Verifying restricted access ==="
     # These should fail or be empty
@@ -419,13 +461,16 @@ configure_gateway() {
     "bind": "loopback"
   },
   "inference": {
-    "provider": "nvidia-nim",
-    "model": "nvidia/nemotron-ultra-253b"
+    "provider": "openai-compatible",
+    "baseUrl": "'"$DEEPSEEK_BASE_URL"'",
+    "model": "'"$DEEPSEEK_MODEL"'",
+    "apiKey": "'"$DEEPSEEK_API_KEY"'"
   },
   "workspace": {
     "allowedPaths": [
       "'"$SANDBOX_MOUNT_1"'",
       "'"$SANDBOX_MOUNT_2"'",
+      "'"$SANDBOX_MOUNT_3"'",
       "/workspace/context-hub"
     ],
     "deniedPaths": [
@@ -507,11 +552,13 @@ print_summary() {
   echo ""
   echo -e "  Sandbox:         ${GREEN}$SANDBOX_NAME${NC}"
   echo -e "  Gateway port:    ${GREEN}18789${NC} (loopback)"
-  echo -e "  Inference:       ${GREEN}NVIDIA Nemotron Ultra 253B${NC}"
+  echo -e "  Inference:       ${GREEN}DeepSeek Reasoner (deepseek-reasoner / V3.2)${NC}"
+  echo -e "  API endpoint:    ${GREEN}$DEEPSEEK_BASE_URL${NC}"
   echo ""
   echo -e "  ${CYAN}Доступные директории:${NC}"
   echo -e "    ${GREEN}$SANDBOX_MOUNT_1${NC}  ←  $ALLOWED_DIR_1"
   echo -e "    ${GREEN}$SANDBOX_MOUNT_2${NC}  ←  $ALLOWED_DIR_2"
+  echo -e "    ${GREEN}$SANDBOX_MOUNT_3${NC}  ←  $ALLOWED_DIR_3"
   echo -e "    ${GREEN}/workspace/context-hub${NC}  ←  context-hub (только чтение)"
   echo ""
   echo -e "  ${RED}Все остальные папки хоста заблокированы.${NC}"
