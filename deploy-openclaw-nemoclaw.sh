@@ -378,21 +378,24 @@ create_sandbox() {
     # Remove stale container with the same name if present
     docker rm -f "$SANDBOX_NAME" 2>/dev/null || true
 
-    # Start with bridge network so npm install can fetch packages.
-    # Use --entrypoint to bypass node's docker-entrypoint.sh which may
-    # need capabilities we drop. Keep security hardening reasonable:
-    # drop dangerous caps but keep basics the runtime needs.
+    # Ensure allowed host directories exist (create if missing)
+    mkdir -p "$ALLOWED_DIR_1" "$ALLOWED_DIR_2" "$ALLOWED_DIR_3"
+
+    # Build volume args — only mount directories that exist on the host
+    local vol_args=()
+    vol_args+=(-v "$ALLOWED_DIR_1:$SANDBOX_MOUNT_1:rw")
+    vol_args+=(-v "$ALLOWED_DIR_2:$SANDBOX_MOUNT_2:rw")
+    vol_args+=(-v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw")
+    [[ -d "$CONTEXTHUB_DIR" ]] && vol_args+=(-v "$CONTEXTHUB_DIR:/workspace/context-hub:ro")
+
+    # Use node (guaranteed in this image) as keep-alive instead of sleep
     docker run -d \
       --name "$SANDBOX_NAME" \
       --hostname "$SANDBOX_NAME" \
       --security-opt no-new-privileges:true \
-      --entrypoint "" \
       --tmpfs /tmp:rw,nosuid,size=512m \
       --tmpfs /sandbox:rw,exec,size=2g \
-      -v "$ALLOWED_DIR_1:$SANDBOX_MOUNT_1:rw" \
-      -v "$ALLOWED_DIR_2:$SANDBOX_MOUNT_2:rw" \
-      -v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw" \
-      -v "$CONTEXTHUB_DIR:/workspace/context-hub:ro" \
+      "${vol_args[@]}" \
       -e "CHUB_CONTENT_DIR=/workspace/context-hub/content" \
       -e "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" \
       -e "DEEPSEEK_BASE_URL=$DEEPSEEK_BASE_URL" \
@@ -401,11 +404,14 @@ create_sandbox() {
       -e "HOME=/sandbox" \
       -w /sandbox \
       node:22-slim \
-      /bin/sleep infinity
+      node -e "setInterval(()=>{},1<<30)"
 
-    # Verify container is actually running
-    if ! docker inspect -f '{{.State.Running}}' "$SANDBOX_NAME" 2>/dev/null | grep -q true; then
-      err "Container failed to start. Logs:"
+    # Give the container a moment to start, then verify
+    sleep 2
+    local state
+    state=$(docker inspect -f '{{.State.Status}}' "$SANDBOX_NAME" 2>/dev/null || echo "missing")
+    if [[ "$state" != "running" ]]; then
+      err "Container is '$state' instead of 'running'. Logs:"
       docker logs "$SANDBOX_NAME" 2>&1 || true
       die "Fix the issue above and retry."
     fi
