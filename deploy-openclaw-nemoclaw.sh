@@ -375,16 +375,21 @@ create_sandbox() {
     # Fallback: use Docker directly with OpenShell-compatible security
     info "OpenShell CLI not found. Using Docker with manual security hardening..."
 
+    # Remove stale container with the same name if present
+    docker rm -f "$SANDBOX_NAME" 2>/dev/null || true
+
+    # Start with a bridge network so npm install can fetch packages.
+    # Network will be restricted after setup via enable_inference_network.
+    # NOTE: --read-only requires tmpfs for every writable path the runtime needs.
     docker run -d \
       --name "$SANDBOX_NAME" \
       --hostname "$SANDBOX_NAME" \
-      --user "1000:1000" \
-      --read-only \
-      --tmpfs /tmp:rw,noexec,nosuid,size=512m \
-      --tmpfs /sandbox:rw,exec,size=2g \
       --security-opt no-new-privileges:true \
       --cap-drop ALL \
-      --network none \
+      --cap-add NET_RAW \
+      --tmpfs /tmp:rw,noexec,nosuid,size=512m \
+      --tmpfs /sandbox:rw,exec,size=2g \
+      --tmpfs /root:rw,size=64m \
       -v "$ALLOWED_DIR_1:$SANDBOX_MOUNT_1:rw" \
       -v "$ALLOWED_DIR_2:$SANDBOX_MOUNT_2:rw" \
       -v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw" \
@@ -522,14 +527,17 @@ GWEOF
 # ── Step 9: Enable networking for inference (controlled) ──────────────────────
 
 enable_inference_network() {
-  info "Enabling controlled network access for inference..."
+  info "Verifying network access for inference..."
 
-  # Reconnect container to a restricted network if it was started with --network none
-  # Create a dedicated Docker network for inference-only traffic
+  # Container starts with default bridge network so npm install works.
+  # Optionally create a dedicated network for tighter control.
   docker network create "${SANDBOX_NAME}-inference" 2>/dev/null || true
+  docker network connect "${SANDBOX_NAME}-inference" "$SANDBOX_NAME" 2>/dev/null || true
 
-  docker network connect "${SANDBOX_NAME}-inference" "$SANDBOX_NAME" 2>/dev/null || \
-    warn "Network already connected or not needed."
+  # Verify DNS + HTTPS connectivity from inside the container
+  docker exec "$SANDBOX_NAME" sh -c \
+    'wget -q --spider https://api.deepseek.com 2>/dev/null && echo "[✓] DeepSeek API reachable" || echo "[!] DeepSeek API not reachable (check network)"' \
+    2>&1 || true
 
   log "Inference network configured."
 }
