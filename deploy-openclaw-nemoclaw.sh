@@ -438,10 +438,10 @@ create_sandbox() {
 setup_sandbox_interior() {
   info "Setting up OpenClaw inside sandbox..."
 
-  # Install git inside container (needed by some npm packages)
+  # Install git (needed by some npm packages) and psmisc (fuser, needed by --force)
   docker exec "$SANDBOX_NAME" sh -c '
-    apt-get update -qq && apt-get install -y -qq git >/dev/null 2>&1
-  ' 2>&1 || warn "Could not install git inside container."
+    apt-get update -qq && apt-get install -y -qq git psmisc >/dev/null 2>&1
+  ' 2>&1 || warn "Could not install packages inside container."
 
   # Create wrapper scripts in /sandbox/bin so openclaw and chub are on PATH
   docker exec "$SANDBOX_NAME" sh -c '
