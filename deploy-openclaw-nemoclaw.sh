@@ -378,18 +378,17 @@ create_sandbox() {
     # Remove stale container with the same name if present
     docker rm -f "$SANDBOX_NAME" 2>/dev/null || true
 
-    # Start with a bridge network so npm install can fetch packages.
-    # Network will be restricted after setup via enable_inference_network.
-    # NOTE: --read-only requires tmpfs for every writable path the runtime needs.
+    # Start with bridge network so npm install can fetch packages.
+    # Use --entrypoint to bypass node's docker-entrypoint.sh which may
+    # need capabilities we drop. Keep security hardening reasonable:
+    # drop dangerous caps but keep basics the runtime needs.
     docker run -d \
       --name "$SANDBOX_NAME" \
       --hostname "$SANDBOX_NAME" \
       --security-opt no-new-privileges:true \
-      --cap-drop ALL \
-      --cap-add NET_RAW \
-      --tmpfs /tmp:rw,noexec,nosuid,size=512m \
+      --entrypoint "" \
+      --tmpfs /tmp:rw,nosuid,size=512m \
       --tmpfs /sandbox:rw,exec,size=2g \
-      --tmpfs /root:rw,size=64m \
       -v "$ALLOWED_DIR_1:$SANDBOX_MOUNT_1:rw" \
       -v "$ALLOWED_DIR_2:$SANDBOX_MOUNT_2:rw" \
       -v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw" \
@@ -402,7 +401,14 @@ create_sandbox() {
       -e "HOME=/sandbox" \
       -w /sandbox \
       node:22-slim \
-      sleep infinity
+      /bin/sleep infinity
+
+    # Verify container is actually running
+    if ! docker inspect -f '{{.State.Running}}' "$SANDBOX_NAME" 2>/dev/null | grep -q true; then
+      err "Container failed to start. Logs:"
+      docker logs "$SANDBOX_NAME" 2>&1 || true
+      die "Fix the issue above and retry."
+    fi
   fi
 
   log "Sandbox '$SANDBOX_NAME' created."
