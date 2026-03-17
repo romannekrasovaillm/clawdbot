@@ -438,9 +438,9 @@ create_sandbox() {
 setup_sandbox_interior() {
   info "Setting up OpenClaw inside sandbox..."
 
-  # Install git (needed by some npm packages) and psmisc (fuser, needed by --force)
+  # Install git (npm packages), psmisc (fuser for --force), procps (pkill for restart)
   docker exec "$SANDBOX_NAME" sh -c '
-    apt-get update -qq && apt-get install -y -qq git psmisc >/dev/null 2>&1
+    apt-get update -qq && apt-get install -y -qq git psmisc procps >/dev/null 2>&1
   ' 2>&1 || warn "Could not install packages inside container."
 
   # Create wrapper scripts in /sandbox/bin so openclaw and chub are on PATH
@@ -531,16 +531,42 @@ WRAPPER
 configure_gateway() {
   info "Configuring OpenClaw gateway..."
 
-  # Write only keys that OpenClaw's config schema recognizes.
-  # NemoClaw-specific settings (inference, workspace, contextHub) are passed
-  # via environment variables and a separate nemoclaw config file instead.
-  local config_script='
-    # Create openclaw config directory
+  # Write config using the schema that OpenClaw's config wizard produces.
+  # DeepSeek is registered as a custom OpenAI-compatible provider.
+  docker exec "$SANDBOX_NAME" sh -c '
     mkdir -p /sandbox/.openclaw
 
-    # Write gateway config (only valid OpenClaw schema keys)
     cat > /sandbox/.openclaw/openclaw.json <<GWEOF
 {
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "custom-api-deepseek-com": {
+        "baseUrl": "'"$DEEPSEEK_BASE_URL"'",
+        "apiKey": "'"$DEEPSEEK_API_KEY"'",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "'"$DEEPSEEK_MODEL"'",
+            "name": "'"$DEEPSEEK_MODEL"' (DeepSeek)",
+            "reasoning": true,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 64000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "custom-api-deepseek-com/'"$DEEPSEEK_MODEL"'"
+      },
+      "workspace": "/sandbox/.openclaw/workspace"
+    }
+  },
   "gateway": {
     "mode": "local",
     "port": 18789,
@@ -549,45 +575,8 @@ configure_gateway() {
 }
 GWEOF
 
-    # Write NemoClaw-specific settings to a separate config file
-    cat > /sandbox/.openclaw/nemoclaw.json <<NMEOF
-{
-  "inference": {
-    "provider": "openai-compatible",
-    "baseUrl": "'"$DEEPSEEK_BASE_URL"'",
-    "model": "'"$DEEPSEEK_MODEL"'",
-    "apiKey": "'"$DEEPSEEK_API_KEY"'"
-  },
-  "workspace": {
-    "allowedPaths": [
-      "'"$SANDBOX_MOUNT_1"'",
-      "'"$SANDBOX_MOUNT_2"'",
-      "'"$SANDBOX_MOUNT_3"'",
-      "/workspace/context-hub"
-    ],
-    "deniedPaths": [
-      "/",
-      "/home",
-      "/etc",
-      "/var",
-      "/usr",
-      "/root"
-    ]
-  },
-  "contextHub": {
-    "enabled": true,
-    "contentDir": "/workspace/context-hub/content",
-    "annotations": "/sandbox/.openclaw/chub-annotations"
-  }
-}
-NMEOF
-
-    echo "[✓] OpenClaw config written"
-    echo "[✓] NemoClaw config written"
-  '
-
-  docker exec "$SANDBOX_NAME" sh -c "$config_script" 2>&1 || \
-    warn "Gateway config may need manual adjustment."
+    echo "[✓] OpenClaw config written (DeepSeek + gateway)"
+  ' 2>&1 || warn "Gateway config may need manual adjustment."
 
   log "Gateway configured."
 }
