@@ -388,6 +388,11 @@ create_sandbox() {
     vol_args+=(-v "$ALLOWED_DIR_3:$SANDBOX_MOUNT_3:rw")
     [[ -d "$CONTEXTHUB_DIR" ]] && vol_args+=(-v "$CONTEXTHUB_DIR:/workspace/context-hub:ro")
 
+    # Mount locally-built openclaw so binaries are available inside the container
+    vol_args+=(-v "$OPENCLAW_DIR:/opt/openclaw:ro")
+    # Mount host bin dir (contains chub symlink)
+    vol_args+=(-v "$INSTALL_DIR/bin:/opt/hostbin:ro")
+
     # Use --entrypoint to skip docker-entrypoint.sh (it needs setuid
     # which is blocked by no-new-privileges). Run node directly as
     # a keep-alive process.
@@ -402,7 +407,7 @@ create_sandbox() {
       -e "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" \
       -e "DEEPSEEK_BASE_URL=$DEEPSEEK_BASE_URL" \
       -e "DEEPSEEK_MODEL=$DEEPSEEK_MODEL" \
-      -e "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/sandbox/node_modules/.bin" \
+      -e "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/sandbox/node_modules/.bin:/sandbox/bin" \
       -e "HOME=/sandbox" \
       -w /sandbox \
       node:22-slim \
@@ -427,18 +432,43 @@ create_sandbox() {
 setup_sandbox_interior() {
   info "Setting up OpenClaw inside sandbox..."
 
-  # Install openclaw and context-hub CLI inside the container
+  # Create wrapper scripts in /sandbox/bin so openclaw and chub are on PATH
   docker exec "$SANDBOX_NAME" sh -c '
-    # Make sandbox writable area
-    mkdir -p /sandbox/node_modules /sandbox/.openclaw
+    mkdir -p /sandbox/bin /sandbox/node_modules /sandbox/.openclaw
 
-    # Install openclaw globally into sandbox-local prefix
-    npm install --prefix /sandbox openclaw @aisuite/chub 2>/dev/null || {
-      echo "[!] npm install failed (network may be restricted). Trying offline setup..."
-    }
-  ' 2>&1 || warn "In-sandbox npm install had issues (expected if --network none)."
+    # Create openclaw wrapper that runs the locally-mounted build
+    cat > /sandbox/bin/openclaw <<WRAPPER
+#!/bin/sh
+exec /usr/local/bin/node /opt/openclaw/openclaw.mjs "\$@"
+WRAPPER
+    chmod +x /sandbox/bin/openclaw
 
-  # Copy context-hub content if network is disabled
+    # Create chub wrapper that runs context-hub CLI
+    if [ -f /workspace/context-hub/cli/chub.js ]; then
+      cat > /sandbox/bin/chub <<WRAPPER
+#!/bin/sh
+exec /usr/local/bin/node /workspace/context-hub/cli/chub.js "\$@"
+WRAPPER
+      chmod +x /sandbox/bin/chub
+      echo "[✓] chub CLI installed"
+    elif [ -f /opt/hostbin/chub ]; then
+      # Fallback: copy from host bin mount
+      cp /opt/hostbin/chub /sandbox/bin/chub 2>/dev/null || true
+      chmod +x /sandbox/bin/chub 2>/dev/null || true
+      echo "[✓] chub CLI installed (from hostbin)"
+    else
+      echo "[!] chub CLI not available (context-hub/cli/chub.js not found)"
+    fi
+
+    # Verify openclaw is callable
+    if /sandbox/bin/openclaw --version 2>/dev/null; then
+      echo "[✓] openclaw CLI available"
+    else
+      echo "[!] openclaw CLI installed but version check failed (may still work)"
+    fi
+  ' 2>&1 || warn "Sandbox interior setup had issues."
+
+  # Verify context-hub mount
   docker exec "$SANDBOX_NAME" sh -c '
     if [ -d /workspace/context-hub ]; then
       echo "[✓] context-hub mounted at /workspace/context-hub"
@@ -473,7 +503,6 @@ setup_sandbox_interior() {
 
     echo ""
     echo "=== Verifying restricted access ==="
-    # These should fail or be empty
     ls /home 2>/dev/null && echo "[✗] WARNING: /home is accessible!" || echo "[✓] /home is blocked"
     ls /etc/shadow 2>/dev/null && echo "[✗] WARNING: /etc/shadow readable!" || echo "[✓] /etc/shadow is blocked"
   '
@@ -564,20 +593,16 @@ start_gateway() {
   docker exec -d "$SANDBOX_NAME" sh -c '
     export HOME=/sandbox
     export OPENCLAW_CONFIG=/sandbox/.openclaw/openclaw.json
+    export PATH="/sandbox/bin:$PATH"
 
-    # Start gateway in background
-    if command -v openclaw >/dev/null 2>&1; then
-      openclaw gateway run --bind loopback --port 18789 --force \
-        > /tmp/openclaw-gateway.log 2>&1 &
-      echo $! > /tmp/openclaw-gateway.pid
-      echo "[✓] Gateway started (PID: $(cat /tmp/openclaw-gateway.pid))"
-    elif [ -f /sandbox/node_modules/.bin/openclaw ]; then
-      /sandbox/node_modules/.bin/openclaw gateway run --bind loopback --port 18789 --force \
+    # Start gateway in background using the wrapper script
+    if [ -x /sandbox/bin/openclaw ]; then
+      /sandbox/bin/openclaw gateway run --bind loopback --port 18789 --force \
         > /tmp/openclaw-gateway.log 2>&1 &
       echo $! > /tmp/openclaw-gateway.pid
       echo "[✓] Gateway started (PID: $(cat /tmp/openclaw-gateway.pid))"
     else
-      echo "[!] OpenClaw binary not found. Install manually: npm install -g openclaw"
+      echo "[!] OpenClaw binary not found at /sandbox/bin/openclaw"
     fi
   ' 2>&1
 
